@@ -350,29 +350,29 @@ class MusicEmbedManager {
         let endEmbed = null;
         const guildId = player.guild?.id;
 
-        try {
-            const title = guildId
-                ? await LanguageManager.getTranslation(guildId, 'musicmanager.playback_ended')
-                : 'Playback Ended';
-            const description = guildId
-                ? await LanguageManager.getTranslation(guildId, 'musicmanager.queue_empty')
-                : 'Queue is now empty.';
+        // try {
+        //     const title = guildId
+        //         ? await LanguageManager.getTranslation(guildId, 'musicmanager.playback_ended')
+        //         : 'Playback Ended';
+        //     const description = guildId
+        //         ? await LanguageManager.getTranslation(guildId, 'musicmanager.queue_empty')
+        //         : 'Queue is now empty.';
 
-            endEmbed = new EmbedBuilder()
-                .setTitle(`🎵 ${title}`)
-                .setDescription(description)
-                .setColor('#FF6B6B')
-                .setTimestamp();
-        } catch (error) {
-            console.error('Error preparing playback end embed:', error);
-        }
+        //     endEmbed = new EmbedBuilder()
+        //         .setTitle(`🎵 ${title}`)
+        //         .setDescription(description)
+        //         .setColor('#FF6B6B')
+        //         .setTimestamp();
+        // } catch (error) {
+        //     console.error('Error preparing playback end embed:', error);
+        // }
 
-        if (!endEmbed) {
-            endEmbed = new EmbedBuilder()
-                .setDescription('🎵 Playback ended')
-                .setColor('#FF6B6B')
-                .setTimestamp();
-        }
+        // if (!endEmbed) {
+        //     endEmbed = new EmbedBuilder()
+        //         .setDescription('🎵 Playback ended')
+        //         .setColor('#FF6B6B')
+        //         .setTimestamp();
+        // }
 
         const textChannel = player.textChannel;
         if (textChannel && typeof textChannel.send === 'function') {
