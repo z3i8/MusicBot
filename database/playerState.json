@@ -1,3 +1,49 @@
 {
-    "players": {}
+    "players": {
+        "1438804035884023854": {
+            "guildId": "1438804035884023854",
+            "voiceChannelId": "1438804036752117895",
+            "textChannelId": "1438804036752117895",
+            "currentTrack": {
+                "id": "D1S_0nwUbhg",
+                "title": "Amr Diab ... Ana Mosh Anany | عمرو دياب ... أنا مش أناني",
+                "url": "https://www.youtube.com/watch?v=D1S_0nwUbhg",
+                "duration": 290,
+                "thumbnail": null,
+                "artist": "Rotana",
+                "album": null,
+                "platform": "youtube",
+                "uploader": null,
+                "youtubeUrl": null,
+                "soundcloudUrl": null,
+                "spotifyUrl": null,
+                "isLive": false,
+                "addedAt": 1764711881628,
+                "requesterId": "671656203310596096",
+                "requesterTag": "9fef",
+                "extra": null
+            },
+            "queue": [],
+            "previousTracks": [],
+            "volume": 100,
+            "loop": false,
+            "shuffle": false,
+            "autoplay": false,
+            "paused": false,
+            "pauseReasons": [],
+            "playbackPositionMs": 218720,
+            "currentTrackStartOffsetMs": 24980,
+            "lastPlaybackPosition": 24980,
+            "requesterId": "671656203310596096",
+            "nowPlayingMessageId": null,
+            "nowPlayingChannelId": "1438804036752117895",
+            "sessionId": "mip3wr4v3l7xemi5nmh",
+            "downloadedFiles": [
+                "D:\\Workspace\\discord.JS\\MusicBot\\audio_cache\\track_7569d0fe9d73a955f9089ddb00990948.opus"
+            ],
+            "currentDownloadedFile": "D:\\Workspace\\discord.JS\\MusicBot\\audio_cache\\track_7569d0fe9d73a955f9089ddb00990948.opus",
+            "updatedAt": 1764712112923,
+            "reason": "interval"
+        }
+    }
 }
