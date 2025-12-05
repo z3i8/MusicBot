@@ -19,24 +19,6 @@ async function addBot() {
   // Additional settings
   const settings = {};
 
-  const settingsInput = await ask([
-    {
-      type: "confirm",
-      name: "auto_join_guild",
-      message: "Enable auto_join_guild?",
-      default: false,
-    },
-    {
-      type: "confirm",
-      name: "auto_join_channel",
-      message: "Enable auto_join_channel?",
-      default: false,
-    },
-  ]);
-
-  settings.auto_join_guild = settingsInput.auto_join_guild;
-  settings.auto_join_channel = settingsInput.auto_join_channel;
-
   await Bot.create({
     name: data.name,
     slug: data.slug,
