@@ -17,18 +17,17 @@ class YouTube {
         };
 
         // Cookie ayarlarını ekle (eğer varsa)
-        if (config.ytdl.cookiesFromBrowser) {
-            baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
-        } else if (config.ytdl.cookiesFile) {
-            baseOptions.cookies = config.ytdl.cookiesFile;
-        }
+        // if (config.ytdl.cookiesFromBrowser) {
+        //     baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
+        // } else if (config.ytdl.cookiesFile) {
+        //     baseOptions.cookies = config.ytdl.cookiesFile;
+        // }
 
         return baseOptions;
     }
 
     static async search(query, limit = 1, guildId = null) {
         try {
-
 
             // If it's already a YouTube URL, get info directly
             if (this.isYouTubeURL(query)) {
@@ -98,7 +97,6 @@ class YouTube {
 
     static async getInfo(url, guildId = null) {
         try {
-
 
             const info = await youtubedl(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
