@@ -24,14 +24,24 @@ class YouTube {
             // Optimization flags
             noPlaylist: true,
             quiet: true,
+            extractorArgs: 'youtube:player_client=mweb,web',
             ...extraOptions
         };
 
-        // Cookie ayarlarını ekle (eğer varsa)
+        // Cookie settings (use browser cookies, explicit file, or default cookies.txt if exists)
         if (config.ytdl.cookiesFromBrowser) {
             baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
-        } else if (config.ytdl.cookiesFile) {
-            baseOptions.cookies = config.ytdl.cookiesFile;
+        } else {
+            const defaultCookies = path.resolve(__dirname, '..', 'cookies.txt');
+            const targetCookies = config.ytdl.cookiesFile || (fs.existsSync(defaultCookies) ? defaultCookies : null);
+            if (targetCookies) {
+                const cookiesPath = path.isAbsolute(targetCookies)
+                    ? targetCookies
+                    : path.resolve(__dirname, '..', targetCookies);
+                if (fs.existsSync(cookiesPath)) {
+                    baseOptions.cookies = cookiesPath;
+                }
+            }
         }
 
         return baseOptions;
@@ -39,11 +49,13 @@ class YouTube {
 
     static getCookieHeader() {
         try {
-            if (!config.ytdl.cookiesFile) return null;
+            const defaultCookies = path.resolve(__dirname, '..', 'cookies.txt');
+            const targetCookies = config.ytdl.cookiesFile || (fs.existsSync(defaultCookies) ? defaultCookies : null);
+            if (!targetCookies) return null;
             
-            const cookiesPath = path.isAbsolute(config.ytdl.cookiesFile)
-                ? config.ytdl.cookiesFile
-                : path.resolve(__dirname, '..', config.ytdl.cookiesFile);
+            const cookiesPath = path.isAbsolute(targetCookies)
+                ? targetCookies
+                : path.resolve(__dirname, '..', targetCookies);
 
             if (!fs.existsSync(cookiesPath)) return null;
 

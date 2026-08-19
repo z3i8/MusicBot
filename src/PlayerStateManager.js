@@ -21,7 +21,14 @@ class PlayerStateManager {
 
     readDatabase() {
         try {
+            if (!fs.existsSync(this.filePath)) {
+                this.ensureFileExists();
+                return { bots: {} };
+            }
             const content = fs.readFileSync(this.filePath, 'utf8');
+            if (!content || !content.trim()) {
+                return { bots: {} };
+            }
             const data = JSON.parse(content);
             // Migration for old structure if it exists
             if (data.players && !data.bots) {
@@ -29,14 +36,20 @@ class PlayerStateManager {
             }
             return data;
         } catch (error) {
-            console.error('❌ Failed to read database:', error.message);
+            // Silently recover if transient file read collision
             return { bots: {} };
         }
     }
 
     writeDatabase(data) {
         try {
-            fs.writeFileSync(this.filePath, JSON.stringify(data, null, 4), 'utf8');
+            const dir = path.dirname(this.filePath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            const tmpFile = `${this.filePath}.tmp.${process.pid}.${Date.now()}`;
+            fs.writeFileSync(tmpFile, JSON.stringify(data, null, 4), 'utf8');
+            fs.renameSync(tmpFile, this.filePath);
         } catch (error) {
             console.error('❌ Failed to write database:', error.message);
         }

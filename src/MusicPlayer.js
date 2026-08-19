@@ -688,29 +688,17 @@ class MusicPlayer {
             if (track.platform === 'youtube' || track.platform === 'spotify' || track.platform === 'soundcloud') {
                 const youtubedl = require('youtube-dl-exec');
 
-                const ytdlOptions = {
+                const ytdlOptions = YouTube.getYtDlpOptions({
                     output: filepath,
                     format: config.ytdl.format || 'bestaudio/best',
-                    noCheckCertificates: true,
-                    noWarnings: true,
                     preferFreeFormats: true,
-                    addHeader: [
-                        'referer:youtube.com',
-                        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    ],
                     postprocessorArgs: {
                         'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
                     },
                     extractAudio: true,
                     audioFormat: 'opus',
                     ffmpegLocation: ffmpegPath
-                };
-
-                if (config.ytdl.cookiesFromBrowser) {
-                    ytdlOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
-                } else if (config.ytdl.cookiesFile) {
-                    ytdlOptions.cookies = config.ytdl.cookiesFile;
-                }
+                });
 
                 await youtubedl(downloadUrl, ytdlOptions);
             } else {

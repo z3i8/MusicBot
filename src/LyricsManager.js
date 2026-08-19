@@ -4,20 +4,26 @@ const config = require('../config');
 
 class LyricsManager {
     constructor() {
-        this.cache = new Map(); // Cache lyrics by track URL
+        this.cache = new Map(); // Cache lyrics by track URL / key
         this.cacheTimers = new Map(); // Track cache expiration timers
 
-        // Initialize Genius client (works without token via web scraping)
-        // Token can be added later for higher rate limits: new Genius.Client(token)
-        this.geniusClient = new Genius.Client();
+        // Initialize Genius client with optional token from config
+        const geniusToken = config.genius?.clientSecret || config.genius?.clientId || null;
+        this.geniusClient = geniusToken ? new Genius.Client(geniusToken) : new Genius.Client();
+        
+        // HTTP client with proper User-Agent header for LRCLIB
+        this.http = axios.create({
+            timeout: 6000,
+            headers: {
+                'User-Agent': 'MusicBot/16.0.0 (https://github.com/umutxyp/MusicBot)'
+            }
+        });
     }
-
-
 
     getCacheKey(track) {
         if (!track) return 'unknown';
-        const title = (track.title || '').toLowerCase();
-        const artist = (track.artist || track.uploader || '').toLowerCase();
+        const title = (track.title || '').toLowerCase().trim();
+        const artist = (track.artist || track.uploader || '').toLowerCase().trim();
         return `${title}-${artist}` || title || 'unknown';
     }
 
@@ -46,16 +52,61 @@ class LyricsManager {
 
     cleanTrackTitle(title = '') {
         return title
-            .replace(/\(.*?\)/g, '') // Remove parentheses content
-            .replace(/\[.*?\]/g, '') // Remove brackets content
+            .replace(/\(.*?\)/g, '') // Remove parentheses content like (Official Video)
+            .replace(/\[.*?\]/g, '') // Remove brackets content like [Lyrics]
             .replace(/【.*?】/g, '') // Remove Japanese-style brackets
             .replace(/v[iï]de[oó]/gi, '')
-            .replace(/official|audio|video|lyrics?|full\s?hd|hd|4k|8k|mv|m\/v|premiere/gi, '')
+            .replace(/official|audio|video|lyrics?|full\s?hd|hd|4k|8k|mv|m\/v|premiere|remastered/gi, '')
             .replace(/rotana|mazzika|melody|free\s?tv/gi, '') // Common Arabic record labels
             .replace(/prod(\.)?\s?by.*?$/gi, '') // Remove producer credits
-            .replace(/ft\.|feat\..*?$/gi, '') // Optional: remove features for better search match
+            .replace(/ft\.|feat\..*?$/gi, '') // Remove features for better search match
             .replace(/\|/g, ' ') // Replace pipe with space
             .replace(/\s{2,}/g, ' ') // Collapse multiple spaces
+            .trim();
+    }
+
+    /**
+     * Splits artist and title from common video title patterns (e.g. "Artist - Title")
+     */
+    extractArtistAndTitle(rawTitle = '', fallbackArtist = '') {
+        const clean = this.cleanTrackTitle(rawTitle);
+        const cleanFallbackArtist = (fallbackArtist || '')
+            .replace(/\s-\sTopic$/i, '')
+            .replace(/VEVO$/i, '')
+            .replace(/Official$/i, '')
+            .trim();
+
+        // Check for separators: " - ", " – ", " — ", " : "
+        const separatorMatch = clean.match(/^(.*?)\s*[-–—:]\s*(.*)$/);
+        if (separatorMatch) {
+            const possibleArtist = separatorMatch[1].trim();
+            const possibleTitle = separatorMatch[2].trim();
+            if (possibleArtist && possibleTitle) {
+                return {
+                    artist: possibleArtist,
+                    title: possibleTitle,
+                    fallbackArtist: cleanFallbackArtist
+                };
+            }
+        }
+
+        return {
+            artist: cleanFallbackArtist,
+            title: clean,
+            fallbackArtist: cleanFallbackArtist
+        };
+    }
+
+    /**
+     * Normalize strings for comparison
+     */
+    normalizeString(str = '') {
+        return str
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '') // Remove accents
+            .replace(/[^\w\s]/g, '') // Remove punctuation
+            .replace(/\s+/g, ' ')
             .trim();
     }
 
@@ -65,22 +116,60 @@ class LyricsManager {
     isMatch(track, result) {
         if (!track || !result) return false;
 
-        const trackTitle = this.cleanTrackTitle(track.title).toLowerCase();
-        const resultTitle = this.cleanTrackTitle(result.title || result.trackName || '').toLowerCase();
+        const rawTrackTitle = track.title || '';
+        const rawTrackArtist = track.artist || track.uploader || '';
+        const { artist: extractedArtist, title: extractedTitle } = this.extractArtistAndTitle(rawTrackTitle, rawTrackArtist);
 
-        // High similarity requirement for title
-        const titleSimilarity = this.getSimilarity(trackTitle, resultTitle);
-        if (titleSimilarity > 0.8) return true;
+        const normTrackTitle = this.normalizeString(rawTrackTitle);
+        const normExtractedTitle = this.normalizeString(extractedTitle);
+        const normExtractedArtist = this.normalizeString(extractedArtist);
+        const normTrackArtist = this.normalizeString(rawTrackArtist.replace(/\s-\sTopic$/i, '').replace(/VEVO$/i, ''));
 
-        // If title match is decent, check artist too
-        if (titleSimilarity > 0.5) {
-            const trackArtist = (track.artist || track.uploader || '').replace(/\s-\sTopic$/, '').toLowerCase();
-            const resultArtist = (result.artist || result.artistName || '').toLowerCase();
+        const resultTitle = result.trackName || result.name || result.title || '';
+        const resultArtist = result.artistName || result.artist?.name || result.artist || '';
 
-            if (trackArtist && resultArtist) {
-                const artistSimilarity = this.getSimilarity(trackArtist, resultArtist);
-                return artistSimilarity > 0.6;
+        const normResultTitle = this.normalizeString(resultTitle);
+        const normResultArtist = this.normalizeString(resultArtist);
+
+        if (!normResultTitle) return false;
+
+        // Direct exact match
+        if (normResultTitle === normExtractedTitle || normResultTitle === normTrackTitle) {
+            return true;
+        }
+
+        // Check if result title is contained in track title or vice versa
+        const titleContained = normTrackTitle.includes(normResultTitle) || 
+                               normExtractedTitle.includes(normResultTitle) ||
+                               normResultTitle.includes(normExtractedTitle);
+
+        if (titleContained) {
+            if (!normResultArtist || !normExtractedArtist) return true;
+            if (normTrackTitle.includes(normResultArtist) || 
+                normTrackArtist.includes(normResultArtist) || 
+                normExtractedArtist.includes(normResultArtist) ||
+                normResultArtist.includes(normExtractedArtist)) {
+                return true;
             }
+            if (this.getSimilarity(normExtractedArtist, normResultArtist) > 0.6) {
+                return true;
+            }
+        }
+
+        // Fuzzy similarity checks
+        const titleSim = Math.max(
+            this.getSimilarity(normExtractedTitle, normResultTitle),
+            this.getSimilarity(normTrackTitle, normResultTitle)
+        );
+
+        if (titleSim > 0.8) return true;
+
+        if (titleSim > 0.5) {
+            const artistSim = Math.max(
+                this.getSimilarity(normExtractedArtist, normResultArtist),
+                this.getSimilarity(normTrackArtist, normResultArtist)
+            );
+            if (artistSim > 0.6) return true;
         }
 
         return false;
@@ -93,11 +182,10 @@ class LyricsManager {
         if (!s1 || !s2) return 0;
         if (s1 === s2) return 1.0;
 
-        // If one contains the other, it's a strong signal
         if (s1.includes(s2) || s2.includes(s1)) {
             const shorterLen = Math.min(s1.length, s2.length);
             const longerLen = Math.max(s1.length, s2.length);
-            if (shorterLen / longerLen > 0.7) return 0.9;
+            if (longerLen > 0 && shorterLen / longerLen > 0.4) return 0.85;
         }
 
         const longer = s1.length > s2.length ? s1 : s2;
@@ -161,36 +249,48 @@ class LyricsManager {
     }
 
     /**
-     * Parses LRC format [mm:ss.xx] text
+     * Parses LRC format [mm:ss.xx] or [mm:ss.xxx] text into structured timestamps
      */
     parseLrc(lrc) {
-        if (!lrc) return null;
+        if (!lrc || typeof lrc !== 'string') return null;
         const lines = lrc.split('\n');
         const parsed = [];
 
         for (const line of lines) {
-            // Updated regex to support both [mm:ss.xx] and [mm:ss]
-            const match = line.match(/\[(\d+):(\d+(?:\.\d+)?)\](.*)/);
-            if (match) {
-                const minutes = parseInt(match[1]);
+            // Support multiple timestamps per line: [00:12.34][00:15.67]text
+            const timeTagRegex = /\[(\d{1,2}):(\d{2}(?:\.\d{1,3})?)\]/g;
+            let match;
+            const timestamps = [];
+
+            while ((match = timeTagRegex.exec(line)) !== null) {
+                const minutes = parseInt(match[1], 10);
                 const seconds = parseFloat(match[2]);
-                const time = (minutes * 60 + seconds) * 1000;
-                const text = match[3].trim();
-                // Skip metadata lines like [ti:Title] which won't match the new regex anyway
+                const time = Math.round((minutes * 60 + seconds) * 1000);
+                timestamps.push(time);
+            }
+
+            if (timestamps.length > 0) {
+                const text = line.replace(/\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/g, '').trim();
                 if (text) {
-                    parsed.push({ time, text });
+                    for (const time of timestamps) {
+                        parsed.push({ time, text });
+                    }
                 }
             }
         }
 
-        return parsed.length > 0 ? parsed : null;
+        if (parsed.length === 0) return null;
+
+        // Ensure chronological sorting
+        parsed.sort((a, b) => a.time - b.time);
+        return parsed;
     }
 
     /**
      * Gets the lyric line for a specific time in ms
      */
     getLyricAtTime(lyricsData, timeMs) {
-        if (!lyricsData || !lyricsData.parsed) return null;
+        if (!lyricsData || !lyricsData.parsed || lyricsData.parsed.length === 0) return null;
 
         const lines = lyricsData.parsed;
         let currentLine = null;
@@ -218,7 +318,7 @@ class LyricsManager {
             return this.cache.get(cacheKey);
         }
 
-        console.log(`🔍 Searching lyrics for: ${track.title} - ${track.artist || track.uploader}`);
+        console.log(`🔍 Searching lyrics for: ${track.title} - ${track.artist || track.uploader || ''}`);
 
         // Try LRCLIB first for synced support
         const lrclibResult = await this.fetchFromLrclib(track);
@@ -236,7 +336,6 @@ class LyricsManager {
             return geniusResult;
         }
 
-        // console.log(`❌ No lyrics found for: ${track.title}`);
         // Cache null result to avoid repeated lookups
         this.storeInCache(cacheKey, null);
         return null;
@@ -244,51 +343,59 @@ class LyricsManager {
 
     async fetchFromLrclib(track) {
         try {
-            const artist = (track.artist || track.uploader || '').replace(/\s-\sTopic$/, '').trim();
-            const searchUrl = 'https://lrclib.net/api/search';
-            const cleanTitle = this.cleanTrackTitle(track.title || '');
+            const { artist, title, fallbackArtist } = this.extractArtistAndTitle(track.title, track.artist || track.uploader);
+            const duration = track.duration ? Math.round(track.duration) : null;
 
-            const attempts = [];
+            // Attempt 1: Direct /api/get exact lookup if artist & title are known
+            if (title && (artist || fallbackArtist)) {
+                try {
+                    const getParams = {
+                        track_name: title,
+                        artist_name: artist || fallbackArtist
+                    };
+                    if (duration) getParams.duration = duration;
 
-            // Attempt 1: Specific names (most accurate)
-            if (artist && cleanTitle) {
-                attempts.push({ track_name: cleanTitle, artist_name: artist });
-            }
-
-            // Attempt 2: Search query with artist and title
-            attempts.push({ q: `${artist} ${cleanTitle}`.trim() });
-
-            // Attempt 3: If title has separators like "-" or "|", try parts individually
-            // This helpful for bilingual titles common in Arabic songs
-            if (cleanTitle.includes('-') || cleanTitle.includes('|')) {
-                const parts = cleanTitle.split(/[-|]/).map(p => p.trim()).filter(p => p.length > 5);
-                for (const part of parts) {
-                    attempts.push({ q: part });
+                    const directResponse = await this.http.get('https://lrclib.net/api/get', { params: getParams });
+                    if (directResponse.data && (directResponse.data.plainLyrics || directResponse.data.syncedLyrics)) {
+                        return this.buildLyricsData(track, {
+                            plain: directResponse.data.plainLyrics,
+                            synced: directResponse.data.syncedLyrics,
+                            source: 'LRCLIB'
+                        });
+                    }
+                } catch (e) {
+                    // /api/get returns 404 if not exact, continue to search
                 }
             }
 
-            // Attempt 4: Just the clean title
-            attempts.push({ q: cleanTitle });
+            // Prepare search attempts for /api/search
+            const searchUrl = 'https://lrclib.net/api/search';
+            const attempts = [];
 
-            // Attempt 5: Original title (no cleaning)
-            if (track.title !== cleanTitle) {
-                attempts.push({ q: track.title });
+            if (title && artist) {
+                attempts.push({ track_name: title, artist_name: artist });
+                attempts.push({ q: `${artist} ${title}`.trim() });
             }
 
-            for (let i = 0; i < attempts.length; i++) {
-                const params = attempts[i];
+            if (fallbackArtist && fallbackArtist !== artist && title) {
+                attempts.push({ track_name: title, artist_name: fallbackArtist });
+                attempts.push({ q: `${fallbackArtist} ${title}`.trim() });
+            }
+
+            const cleanRawTitle = this.cleanTrackTitle(track.title);
+            if (cleanRawTitle !== title) {
+                attempts.push({ q: cleanRawTitle });
+            }
+
+            attempts.push({ q: title });
+
+            for (const params of attempts) {
                 if (!params.q && !params.track_name) continue;
 
                 try {
-                    const response = await axios.get(searchUrl, {
-                        params,
-                        timeout: 5000
-                    });
-
-                    if (response.data && response.data.length > 0) {
-                        // Find the first result that matches the track and has lyrics
+                    const response = await this.http.get(searchUrl, { params });
+                    if (response.data && Array.isArray(response.data) && response.data.length > 0) {
                         const result = response.data.find(r => (r.plainLyrics || r.syncedLyrics) && this.isMatch(track, r));
-
                         if (result) {
                             return this.buildLyricsData(track, {
                                 plain: result.plainLyrics,
@@ -298,7 +405,7 @@ class LyricsManager {
                         }
                     }
                 } catch (error) {
-                    // Continue to next attempt
+                    // Continue to next search attempt
                 }
             }
 
@@ -309,33 +416,25 @@ class LyricsManager {
         }
     }
 
-
     async fetchFromGenius(track) {
         try {
-            const artist = (track.artist || track.uploader || '').replace(/\s-\sTopic$/, '').trim();
-            const cleanTitle = this.cleanTrackTitle(track.title || '');
+            const { artist, title, fallbackArtist } = this.extractArtistAndTitle(track.title, track.artist || track.uploader);
+            const searchArtist = artist || fallbackArtist || '';
+            const searchTitle = title || this.cleanTrackTitle(track.title || '');
 
-            if (!cleanTitle) return null;
+            if (!searchTitle) return null;
 
             const queries = [];
-            queries.push(`${artist} ${cleanTitle}`);
-            queries.push(cleanTitle);
-
-            // Handle bilingual/split titles for Genius too
-            if (cleanTitle.includes('-') || cleanTitle.includes('|')) {
-                const parts = cleanTitle.split(/[-|]/).map(p => p.trim()).filter(p => p.length > 5);
-                for (const part of parts) {
-                    queries.push(part);
-                    if (artist) queries.push(`${artist} ${part}`);
-                }
+            if (searchArtist) {
+                queries.push(`${searchArtist} ${searchTitle}`);
             }
+            queries.push(searchTitle);
 
             for (const query of queries) {
                 try {
                     const searches = await this.geniusClient.songs.search(query);
                     if (!searches || searches.length === 0) continue;
 
-                    // Find the first search result that matches the track
                     const matchingSong = searches.find(s => this.isMatch(track, s));
                     if (!matchingSong) continue;
 
@@ -356,7 +455,7 @@ class LyricsManager {
 
             return null;
         } catch (error) {
-            console.error('❌ Failed to fetch lyrics from Genius:', error.message);
+            // Keep error quiet to avoid spamming console
             return null;
         }
     }
@@ -366,18 +465,16 @@ class LyricsManager {
 
         let cleaned = lyrics;
 
-        // Step 1: Remove contributor/translation header (everything before actual lyrics start)
-        // Match: "131 Contributors...Lyrics" or "131 Contributors...Lyrics<img...>"
+        // Step 1: Remove contributor/translation header
         cleaned = cleaned.replace(/^\d+\s+Contributors.*?Lyrics(<[^>]+>)*\s*/is, '');
 
         // Step 2: Remove HTML tags
         cleaned = cleaned.replace(/<[^>]*>/g, '');
 
-        // Step 3: Remove description paragraphs (usually before [Verse] tags)
-        // Match lines that end with "..." and "Read More"
+        // Step 3: Remove description paragraphs
         cleaned = cleaned.replace(/^[^\[]+?\.{3}\s*Read More\s*/im, '');
 
-        // Step 4: Remove bracketed descriptions with quotes (like ["Susamam" ft. ...])
+        // Step 4: Remove bracketed descriptions with quotes
         cleaned = cleaned.replace(/\[[""][^\]]{50,}\]/g, '');
 
         // Step 5: Clean up whitespace
@@ -386,8 +483,6 @@ class LyricsManager {
 
         return cleaned || null;
     }
-
-
 
     /**
      * Format full lyrics for display (with pagination support)
@@ -398,7 +493,7 @@ class LyricsManager {
     formatFullLyrics(lyricsData, maxLength = 4000) {
         if (!lyricsData) return [];
 
-        const text = lyricsData.plain || lyricsData.synced?.replace(/\[\d+:\d+\.\d+\]/g, '') || '';
+        const text = lyricsData.plain || lyricsData.synced?.replace(/\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/g, '') || '';
         if (!text) return [];
 
         const pages = [];
