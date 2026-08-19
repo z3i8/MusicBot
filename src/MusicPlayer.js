@@ -1959,53 +1959,26 @@ class MusicPlayer {
 
         try {
             let streamUrl = track.url;
-            let streamInfo;
+            let streamInfo = null;
 
-            // Get stream URL first
-            switch (track.platform) {
-                case 'youtube':
-                    streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                    break;
-                case 'spotify':
-                    // Use cached YouTube URL if available
-                    if (track.youtubeUrl) {
-                        streamUrl = track.youtubeUrl;
-                        streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                    } else {
-                        // Quick YouTube search for Spotify
-                        const query = `"${track.title}" "${track.artist}"`;
-                        const results = await YouTube.search(query, 1, this.guild.id);
-                        if (results && results.length > 0) {
-                            streamUrl = results[0].url;
-                            track.youtubeUrl = streamUrl; // Cache for future use
-                            streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                        }
-                    }
-                    break;
-                case 'soundcloud':
-                    streamInfo = await SoundCloud.getStream(streamUrl, this.guild.id);
-                    break;
-                case 'direct':
-                    streamInfo = await DirectLink.getStream(streamUrl);
-                    break;
+            // Resolve YouTube equivalent for Spotify if not cached
+            if (track.platform === 'spotify' && !track.youtubeUrl) {
+                const query = `"${track.title}" "${track.artist}"`;
+                const results = await YouTube.search(query, 1, this.guild.id);
+                if (results && results.length > 0) {
+                    track.youtubeUrl = results[0].url;
+                    streamUrl = results[0].url;
+                }
+            } else if (track.platform === 'spotify' && track.youtubeUrl) {
+                streamUrl = track.youtubeUrl;
             }
 
-            if (streamInfo) {
-                // Download track in background
-                let streamUrl_final;
-                if (typeof streamInfo === 'string') {
-                    streamUrl_final = streamInfo;
-                } else if (streamInfo && typeof streamInfo === 'object') {
-                    streamUrl_final = streamInfo.stream || streamInfo.url;
-                } else {
-                    streamUrl_final = streamInfo;
-                }
+            // Directly download the track into cache (single yt-dlp invocation)
+            const downloadedFile = await this.downloadTrack(track, streamUrl, streamInfo);
 
-                await this.downloadTrack(track, streamUrl_final, streamInfo);
-
-                // Mark as preloaded
+            if (downloadedFile) {
                 this.preloadedStreams.set(track.url, {
-                    info: streamInfo,
+                    info: { url: downloadedFile },
                     track: track,
                     downloaded: true
                 });
