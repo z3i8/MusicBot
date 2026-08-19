@@ -1010,85 +1010,72 @@ class MusicPlayer {
                         }
                     });
 
-                // Stream directly for immediate playback
-                let audioStream;
-                if (typeof streamInfo === 'object' && streamInfo.stream) {
-                    audioStream = streamInfo.stream;
-                } else if (typeof streamUrl_final === 'string') {
-                    const fetch = await ensureFetch();
+                // Create FFmpeg process for streaming
+                const seekArgs = resumeFromMs > 0
+                    ? ['-ss', (resumeFromMs / 1000).toFixed(3)]
+                    : [];
 
-                    try {
-                        const response = await fetch(streamUrl_final, {
-                            headers: streamInfo?.httpHeaders || {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            }
-                        });
+                let ffmpegArgs;
+                let isPipedStream = false;
 
-                        if (!response.ok) throw new Error(`Failed to fetch stream: ${response.status}`);
-
-                        audioStream = typeof response.body?.getReader === 'function' && typeof Readable.fromWeb === 'function'
-                            ? Readable.fromWeb(response.body)
-                            : response.body;
-                    } catch (fetchError) {
-                        // Wait for download to complete (up to 120s)
-                        for (let i = 0; i < 120; i++) {
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-                            if (fsSync.existsSync(filepath)) {
-                                const stats = fsSync.statSync(filepath);
-                                if (stats.size > 0) {
-                                    shouldDownload = false; // Switch to file mode
-                                    downloadedFile = filepath;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!downloadedFile) throw fetchError;
-                    }
+                if (typeof streamUrl_final === 'string' && (streamUrl_final.startsWith('http://') || streamUrl_final.startsWith('https://'))) {
+                    ffmpegArgs = [
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '5',
+                        ...seekArgs,
+                        '-analyzeduration', '0',
+                        '-loglevel', '0',
+                        '-i', streamUrl_final,
+                        '-f', 's16le',
+                        '-ar', '48000',
+                        '-ac', '2'
+                    ];
                 } else {
-                    audioStream = streamUrl_final;
+                    isPipedStream = true;
+                    ffmpegArgs = [
+                        ...seekArgs,
+                        '-analyzeduration', '0',
+                        '-loglevel', '0',
+                        '-i', 'pipe:0',
+                        '-f', 's16le',
+                        '-ar', '48000',
+                        '-ac', '2'
+                    ];
                 }
 
-                // If streaming failed and we got a downloaded file, skip to file playback
-                if (!audioStream && downloadedFile) {
-                    shouldDownload = false; // Fall through to file playback
-                } else if (audioStream) {
-                    // Create FFmpeg process for streaming
-                    const seekArgs = resumeFromMs > 0
-                        ? ['-ss', (resumeFromMs / 1000).toFixed(3)]
-                        : [];
+                const ffmpegProcess = new prism.FFmpeg({
+                    command: ffmpegPath,
+                    args: ffmpegArgs
+                });
 
-                    const ffmpegProcess = new prism.FFmpeg({
-                        command: ffmpegPath,
-                        args: [
-                            ...seekArgs,  // Add seek if resuming
-                            '-analyzeduration', '0',
-                            '-loglevel', '0',
-                            '-i', 'pipe:0',
-                            '-f', 's16le',
-                            '-ar', '48000',
-                            '-ac', '2'
-                        ]
-                    });
+                ffmpegProcess.on('error', (err) => {
+                    if (err.message && err.message.includes('Premature close')) return;
+                    console.error('❌ FFmpeg streaming error:', err.message);
+                });
 
-                    ffmpegProcess.on('error', (err) => {
-                        if (err.message && err.message.includes('Premature close')) return;
-                        console.error('❌ FFmpeg streaming error:', err.message);
-                    });
-
-                    audioStream.pipe(ffmpegProcess);
-
-                    this.resource = createAudioResource(ffmpegProcess, {
-                        inputType: StreamType.Raw,
-                        inlineVolume: true,
-                        metadata: {
-                            title: this.currentTrack.title,
-                            url: this.currentTrack.url,
-                            duration: streamInfo.duration || this.currentTrack.duration,
-                            bitrate: streamInfo.bitrate || 128
-                        }
-                    });
+                if (isPipedStream) {
+                    let audioStream;
+                    if (typeof streamInfo === 'object' && streamInfo.stream) {
+                        audioStream = streamInfo.stream;
+                    } else {
+                        audioStream = streamUrl_final;
+                    }
+                    if (audioStream && typeof audioStream.pipe === 'function') {
+                        audioStream.pipe(ffmpegProcess);
+                    }
                 }
+
+                this.resource = createAudioResource(ffmpegProcess, {
+                    inputType: StreamType.Raw,
+                    inlineVolume: true,
+                    metadata: {
+                        title: this.currentTrack.title,
+                        url: this.currentTrack.url,
+                        duration: (streamInfo && streamInfo.duration) || this.currentTrack.duration,
+                        bitrate: (streamInfo && streamInfo.bitrate) || 128
+                    }
+                });
             }
 
             // File playback mode (either pre-downloaded or fallback from streaming)
