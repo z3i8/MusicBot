@@ -1661,6 +1661,28 @@ class MusicPlayer {
             if (endedUnexpectedly) {
                 this.currentTrackRetries += 1;
                 if (this.currentTrackRetries <= 2) {
+                    // If a background download is in progress, wait for it to finish
+                    // so the retry can play from the cached file instead of re-fetching a stream
+                    if (finishedTrack) {
+                        const hash = require('crypto').createHash('md5')
+                            .update(finishedTrack.url).digest('hex');
+                        const cachedPath = require('path').join(CACHE_DIR, `track_${hash}.opus`);
+                        
+                        // Wait up to 30 seconds for the download to complete
+                        for (let i = 0; i < 60; i++) {
+                            if (fsSync.existsSync(cachedPath)) {
+                                const stats = fsSync.statSync(cachedPath);
+                                if (stats.size > 0 && !this.downloadingFiles.has(cachedPath)) {
+                                    this.currentDownloadedFile = cachedPath;
+                                    this.downloadedFiles.add(cachedPath);
+                                    console.log(`🔄 Retry #${this.currentTrackRetries}: download completed, playing from cached file`);
+                                    break;
+                                }
+                            }
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                    }
+                    
                     // Attempt to resume the same track from the last known position
                     await this.play(null, totalPlaybackMs);
                     return;

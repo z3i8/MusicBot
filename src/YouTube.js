@@ -25,7 +25,7 @@ class YouTube {
             // Optimization flags
             noPlaylist: true,
             quiet: true,
-            extractorArgs: 'youtube:player_client=mweb,web',
+            extractorArgs: 'youtube:player_client=ios,android,mweb,web',
             ...extraOptions
         };
 
@@ -33,9 +33,6 @@ class YouTube {
         if (config.ytdl.cookiesFromBrowser) {
             baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
         }
-        // NOTE: file-based cookies are injected per-invocation via
-        // runYtDlp() / runYtDlpExec() using CookieManager isolated copies.
-        // Do NOT set baseOptions.cookies here – it causes concurrent corruption.
 
         return baseOptions;
     }
@@ -116,7 +113,7 @@ class YouTube {
         }
     }
 
-    static async scrapeSearch(query, limit = 1, guildId = null) {
+    static async scrapeSearch(query, limit = 1, guildId = null, useCookies = true) {
         try {
             const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQAQ%253D%253D`;
             
@@ -125,26 +122,39 @@ class YouTube {
                 'Accept-Language': 'en-US,en;q=0.9'
             };
 
-            const cookieHeader = this.getCookieHeader();
-            if (cookieHeader) {
-                headers['Cookie'] = cookieHeader;
+            if (useCookies) {
+                const cookieHeader = this.getCookieHeader();
+                if (cookieHeader) {
+                    headers['Cookie'] = cookieHeader;
+                }
             }
 
             const response = await axios.get(url, {
                 headers,
-                timeout: 5000
+                timeout: 7000
             });
 
             const html = response.data;
             const regex = /var ytInitialData = ({.*?});<\/script>/s;
             const match = html.match(regex);
 
-            if (!match) return [];
+            if (!match) {
+                if (useCookies) {
+                    // Retry without cookies if cookies caused a challenge
+                    return await this.scrapeSearch(query, limit, guildId, false);
+                }
+                return [];
+            }
 
             const data = JSON.parse(match[1]);
             const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents;
 
-            if (!contents) return [];
+            if (!contents || contents.length === 0) {
+                if (useCookies) {
+                    return await this.scrapeSearch(query, limit, guildId, false);
+                }
+                return [];
+            }
 
             const tracks = [];
             const unknownTitle = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.unknown_title') : 'Unknown Title';
@@ -191,6 +201,10 @@ class YouTube {
 
             return tracks;
         } catch (error) {
+            if (useCookies) {
+                // Retry without cookies on network/header error
+                return await this.scrapeSearch(query, limit, guildId, false);
+            }
             console.error('High-speed YouTube search scraper error:', error.message);
             return [];
         }
@@ -218,7 +232,6 @@ class YouTube {
             try {
                 const tracks = await this.scrapeSearch(query, limit, guildId);
                 if (tracks && tracks.length > 0) {
-                    // Save to cache
                     searchCache.set(cacheKey, {
                         data: tracks,
                         timestamp: Date.now()
@@ -229,11 +242,9 @@ class YouTube {
                 console.error('⚠️ High-speed YouTube scraper failed, falling back to yt-dlp:', scrapeError.message);
             }
 
-            // Fallback to slower yt-dlp search if scraper failed
+            // Fallback to yt-dlp search if scraper failed
             const searchQuery = `ytsearch${limit}:${query}`;
 
-            // Optimization: If limit is 1, don't use flatPlaylist so we get full metadata (like duration) in one go
-            // If limit > 1, we use flatPlaylist for speed and fetch details only if necessary
             const searchOptions = {
                 dumpSingleJson: true,
                 flatPlaylist: limit > 1,
@@ -274,7 +285,6 @@ class YouTube {
                         views: item.view_count,
                         uploadDate: item.upload_date,
                         description: item.description,
-                        // Captured stream info for immediate playback if available (only in full info mode, limit=1)
                         streamInfo: (limit === 1 && item.url && item.url !== item.webpage_url) ? {
                             url: item.url,
                             type: item.acodec && item.acodec.includes('opus') ? 'opus' : 'arbitrary',
@@ -285,8 +295,6 @@ class YouTube {
                         } : null
                     };
 
-                    // Only fetch additional info if duration is missing and we really need it
-                    // In single search (limit=1), we turned off flatPlaylist, so duration should already be there.
                     if (limit === 1 && (!track.duration || track.duration === 0)) {
                         const detailedInfo = await this.getInfo(track.url, guildId);
                         if (detailedInfo && detailedInfo.duration) {
@@ -310,7 +318,14 @@ class YouTube {
 
             return tracks;
         } catch (error) {
-            console.error('YouTube Search Error:', error);
+            console.error('YouTube Search Error:', error?.message || error);
+            // Last resort: retry scrapeSearch without cookies if yt-dlp errored
+            try {
+                const fallbackTracks = await this.scrapeSearch(query, limit, guildId, false);
+                if (fallbackTracks && fallbackTracks.length > 0) {
+                    return fallbackTracks;
+                }
+            } catch (_) {}
             return [];
         }
     }
@@ -326,52 +341,87 @@ class YouTube {
                 infoCache.delete(url);
             }
 
-            const info = await this.runYtDlp(url, {
-                dumpSingleJson: true,
-                preferFreeFormats: true,
-                skipDownload: true
-            });
+            const videoId = this.extractVideoId(url);
 
-            if (!info) {
-                const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_info_returned') : 'No info returned from youtube-dl';
-                throw new Error(errorMsg);
+            // 1. Try yt-dlp first
+            let info = null;
+            try {
+                info = await this.runYtDlp(url, {
+                    dumpSingleJson: true,
+                    preferFreeFormats: true,
+                    skipDownload: true
+                });
+            } catch (ytdlErr) {
+                // yt-dlp failed, will use HTTP scraper fallback below
             }
 
             const unknownTitle = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.unknown_title') : 'Unknown Title';
             const unknownArtist = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.unknown_artist') : 'Unknown Artist';
 
-            const track = {
-                title: info.title || unknownTitle,
-                artist: info.uploader || info.channel || unknownArtist,
-                url: info.webpage_url || url,
-                duration: info.duration || 0,
-                thumbnail: info.thumbnail || (info.thumbnails && info.thumbnails.length > 0 ? info.thumbnails[info.thumbnails.length - 1].url : null),
-                thumbnails: info.thumbnails || [],
-                platform: 'youtube',
-                type: 'track',
-                id: info.id,
-                views: info.view_count,
-                uploadDate: info.upload_date,
-                description: info.description,
-                formats: info.formats,
-                // Captured stream info for immediate playback
-                streamInfo: info.url ? {
-                    url: info.url,
-                    type: info.acodec && info.acodec.includes('opus') ? 'opus' : 'arbitrary',
+            if (info && (info.title || info.id)) {
+                const track = {
+                    title: info.title || unknownTitle,
+                    artist: info.uploader || info.channel || unknownArtist,
+                    url: info.webpage_url || url,
                     duration: info.duration || 0,
-                    bitrate: info.abr || info.tbr || 0,
-                    format: info.format,
-                    httpHeaders: info.http_headers || {}
-                } : null
-            };
+                    thumbnail: info.thumbnail || (info.thumbnails && info.thumbnails.length > 0 ? info.thumbnails[info.thumbnails.length - 1].url : null),
+                    thumbnails: info.thumbnails || [],
+                    platform: 'youtube',
+                    type: 'track',
+                    id: info.id || videoId,
+                    views: info.view_count,
+                    uploadDate: info.upload_date,
+                    description: info.description,
+                    formats: info.formats,
+                    streamInfo: info.url ? {
+                        url: info.url,
+                        type: info.acodec && info.acodec.includes('opus') ? 'opus' : 'arbitrary',
+                        duration: info.duration || 0,
+                        bitrate: info.abr || info.tbr || 0,
+                        format: info.format,
+                        httpHeaders: info.http_headers || {}
+                    } : null
+                };
 
-            // Save to cache
-            infoCache.set(url, {
-                data: track,
-                timestamp: Date.now()
-            });
+                infoCache.set(url, { data: track, timestamp: Date.now() });
+                return track;
+            }
 
-            return track;
+            // 2. Scraper fallback using search for video ID
+            if (videoId) {
+                const scrapeResults = await this.scrapeSearch(videoId, 1, guildId);
+                const found = scrapeResults.find(t => t.id === videoId) || scrapeResults[0];
+                if (found) {
+                    infoCache.set(url, { data: found, timestamp: Date.now() });
+                    return found;
+                }
+
+                // 3. oEmbed fallback
+                try {
+                    const oembedRes = await axios.get(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`, { timeout: 4000 });
+                    if (oembedRes.data && oembedRes.data.title) {
+                        const track = {
+                            title: oembedRes.data.title || unknownTitle,
+                            artist: oembedRes.data.author_name || unknownArtist,
+                            url: url,
+                            duration: 0,
+                            thumbnail: oembedRes.data.thumbnail_url || this.createThumbnailUrl(videoId),
+                            thumbnails: [],
+                            platform: 'youtube',
+                            type: 'track',
+                            id: videoId,
+                            views: '0 views',
+                            uploadDate: 'Unknown date',
+                            description: '',
+                            streamInfo: null
+                        };
+                        infoCache.set(url, { data: track, timestamp: Date.now() });
+                        return track;
+                    }
+                } catch (_) {}
+            }
+
+            return null;
         } catch (error) {
             return null;
         }
