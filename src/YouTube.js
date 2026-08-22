@@ -4,6 +4,7 @@ const LanguageManager = require('./LanguageManager');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const CookieManager = require('./CookieManager');
 
 // In-memory cache for search results to improve speed
 const searchCache = new Map();
@@ -11,12 +12,12 @@ const infoCache = new Map();
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 class YouTube {
-    // yt-dlp için ortak parametreleri döndüren yardımcı fonksiyon
+    // Build base yt-dlp options (without cookies – those are added per-invocation)
     static getYtDlpOptions(extraOptions = {}) {
         const baseOptions = {
             noCheckCertificates: true,
             noWarnings: true,
-            // User-Agent header ekle
+            // User-Agent header
             addHeader: [
                 'referer:youtube.com',
                 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -28,23 +29,56 @@ class YouTube {
             ...extraOptions
         };
 
-        // Cookie settings (use browser cookies, explicit file, or default cookies.txt if exists)
+        // Browser cookie mode (no file needed)
         if (config.ytdl.cookiesFromBrowser) {
             baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
-        } else {
-            const defaultCookies = path.resolve(__dirname, '..', 'cookies.txt');
-            const targetCookies = config.ytdl.cookiesFile || (fs.existsSync(defaultCookies) ? defaultCookies : null);
-            if (targetCookies) {
-                const cookiesPath = path.isAbsolute(targetCookies)
-                    ? targetCookies
-                    : path.resolve(__dirname, '..', targetCookies);
-                if (fs.existsSync(cookiesPath)) {
-                    baseOptions.cookies = cookiesPath;
-                }
-            }
         }
+        // NOTE: file-based cookies are injected per-invocation via
+        // runYtDlp() / runYtDlpExec() using CookieManager isolated copies.
+        // Do NOT set baseOptions.cookies here – it causes concurrent corruption.
 
         return baseOptions;
+    }
+
+    /**
+     * Run a yt-dlp call with an isolated cookie copy.
+     * The copy is cleaned up automatically after the call completes.
+     */
+    static async runYtDlp(urlOrQuery, extraOptions = {}) {
+        const opts = this.getYtDlpOptions(extraOptions);
+        const cookieCopy = CookieManager.createIsolatedCopy();
+        if (cookieCopy) {
+            opts.cookies = cookieCopy;
+        }
+        try {
+            const result = await youtubedl(urlOrQuery, opts);
+            CookieManager.releaseCopy(cookieCopy);
+            return result;
+        } catch (err) {
+            CookieManager.releaseCopy(cookieCopy);
+            throw err;
+        }
+    }
+
+    /**
+     * Run yt-dlp.exec() (for subprocess/piped streams) with an isolated cookie copy.
+     * Returns { subprocess, cookieCopy } – caller must call
+     * CookieManager.releaseCopy(cookieCopy) when the subprocess ends.
+     */
+    static runYtDlpExec(url, extraOptions = {}, execOpts = {}) {
+        const opts = this.getYtDlpOptions(extraOptions);
+        const cookieCopy = CookieManager.createIsolatedCopy();
+        if (cookieCopy) {
+            opts.cookies = cookieCopy;
+        }
+        const subprocess = youtubedl.exec(url, opts, execOpts);
+        // Auto-release the cookie copy when subprocess finishes
+        subprocess.then(() => {
+            CookieManager.releaseCopy(cookieCopy);
+        }).catch(() => {
+            CookieManager.releaseCopy(cookieCopy);
+        });
+        return { subprocess, cookieCopy };
     }
 
     static getCookieHeader() {
@@ -207,7 +241,7 @@ class YouTube {
                 noPlaylist: true
             };
 
-            const results = await youtubedl(searchQuery, this.getYtDlpOptions(searchOptions));
+            const results = await this.runYtDlp(searchQuery, searchOptions);
 
             if (!results || !results.entries || results.entries.length === 0) {
                 return [];
@@ -292,11 +326,11 @@ class YouTube {
                 infoCache.delete(url);
             }
 
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await this.runYtDlp(url, {
                 dumpSingleJson: true,
                 preferFreeFormats: true,
                 skipDownload: true
-            }));
+            });
 
             if (!info) {
                 const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_info_returned') : 'No info returned from youtube-dl';
@@ -351,10 +385,10 @@ class YouTube {
             }
 
             // Get stream URL with simple format
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await this.runYtDlp(url, {
                 dumpSingleJson: true,
                 format: config.ytdl.format || 'bestaudio/best',
-            }));
+            });
 
             if (!info || !info.url) {
                 const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_stream_url') : 'No stream URL found';
@@ -384,11 +418,10 @@ class YouTube {
             };
 
             if (returnStream) {
-                const ytdlOptions = this.getYtDlpOptions({
+                const { subprocess, cookieCopy } = this.runYtDlpExec(url, {
                     output: '-',
                     format: config.ytdl.format || 'bestaudio/best',
-                });
-                const subprocess = youtubedl.exec(url, ytdlOptions, { stdio: ['ignore', 'pipe', 'ignore'] });
+                }, { stdio: ['ignore', 'pipe', 'ignore'] });
                 // Prevent unhandled promise rejection if subprocess is killed/terminated later
                 subprocess.catch(() => {});
                 result.stream = subprocess.stdout;
@@ -403,10 +436,10 @@ class YouTube {
 
     static async getPlaylist(url, guildId = null) {
         try {
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await this.runYtDlp(url, {
                 dumpSingleJson: true,
                 flatPlaylist: true,
-            }));
+            });
 
             if (!info) {
                 const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_playlist_info') : 'No playlist info found';
@@ -538,10 +571,10 @@ class YouTube {
     static async validateUrl(url) {
         try {
             if (!this.isYouTubeURL(url)) return false;
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await this.runYtDlp(url, {
                 dumpSingleJson: true,
                 skipDownload: true,
-            }));
+            });
             return !!info && !!info.title;
         } catch (error) {
             return false;

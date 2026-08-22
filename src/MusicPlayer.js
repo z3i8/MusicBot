@@ -686,9 +686,7 @@ class MusicPlayer {
 
             // For YouTube, Spotify (via YouTube), SoundCloud (via YouTube) - use youtube-dl-exec
             if (track.platform === 'youtube' || track.platform === 'spotify' || track.platform === 'soundcloud') {
-                const youtubedl = require('youtube-dl-exec');
-
-                const ytdlOptions = YouTube.getYtDlpOptions({
+                await YouTube.runYtDlp(downloadUrl, {
                     output: filepath,
                     format: config.ytdl.format || 'bestaudio/best',
                     preferFreeFormats: true,
@@ -699,8 +697,6 @@ class MusicPlayer {
                     audioFormat: 'opus',
                     ffmpegLocation: ffmpegPath
                 });
-
-                await youtubedl(downloadUrl, ytdlOptions);
             } else {
                 // For DirectLink - fetch and transcode with FFmpeg
                 const fetch = await ensureFetch();
